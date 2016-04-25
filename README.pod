@@ -1,0 +1,111 @@
+=head1 NAME
+
+vhost-analyzer
+
+=head1 SYNOPSIS
+
+vhost-analyzer [OPTIONS] access.log
+
+=head1 DESCRIPTION
+
+B<vhost-analyzer> is a useful tool to analyze your access.log
+containing the logs of many different virtual hosts.
+
+By default, B<vhost-analyzer> parses the first eight fields of each
+log entry. The first fields is the virtual host name, and the other
+fields are equal to the Common Log Format fields. For the Apache
+webserver, this means that the log format needs to start as follows:
+
+    LogFormat "%V %h %l %u %t \"%r\" %s %b" vcombined
+
+Since extra fields are not parsed, any number and combination of other
+fields can be added.
+
+B<vhost-analyzer> can also be used to parse logs which start with the
+Common Log Format fields but which don't contain the virtual host
+name. Using the C<--add-host> option, all records can be considered
+for one specific virtual host.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-h|--help>
+
+Show the help message.
+
+=item B<-s|--select EXPRESSION>
+
+This options allows to specify which lines should be used in the
+analysis. Lines not matching the given expression are not included in
+the analysis.
+
+Expressions are an and/or combination of simple string matching
+expressions of the form C<KEY OP STRING>, whereas C<KEY> can be one of
+the following keys: C<vhost>, C<remote_host>, C<logname>,
+C<remote_user>, C<time>, C<request>, C<status>, C<method>, C<path>,
+C<query>. C<OP> is a comparison operation: C<=> (equal), C<!=> (not
+equal), C<=~> (perl regex match), C<!~> (inverse perl regex match).
+
+Examples:
+
+=over
+
+=item C<vhost="mydomain.com">
+
+Analyzes only records for the virtual host C<mydomain.com>.
+
+=item C<vhost="mydomain.com" and path=~"\.(css|js|png|gif|jpg)$">
+
+Analyzes accesses to static files on for C<mydomain.com>.
+
+=back
+
+=item B<-o|--sort-by FIELD>
+
+Sort the resulting table by the specified field. Available fields for
+sorting:
+
+=over
+
+=item vhost (default): Sort by virtual host name
+
+=item requests: Sort by number of requests
+
+=item traffic: Sort by traffic
+
+=item peak: Sort by peak requests (highest number of requests in one minute)
+
+=back
+
+=item B<-t|--total>
+
+Add a Total row to the output table.
+
+=item B<-a|--add-vhost VHOST>
+
+Consider all lines to be from the specified VHOST. Use this if you
+want to work on the log of a single virtual host which doesn't have
+the virtual host field.
+
+=back
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright (C) 2016 Oliver Hitz
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or (at
+your option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307,
+USA.
+
