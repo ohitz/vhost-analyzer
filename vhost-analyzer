@@ -1,0 +1,244 @@
+#!/usr/bin/perl
+#
+# Copyright (C) 2016 Oliver Hitz <oliver@net-track.ch>
+#
+
+use Getopt::Long;
+use IO::Handle;
+use strict;
+
+STDERR->autoflush(1);
+STDOUT->autoflush(1);
+
+my $opt_help;
+my @opt_select;
+my $opt_sortby = "vhost";
+my $opt_total;
+my $opt_add_vhost;
+
+if (!GetOptions("h|help" => \$opt_help,
+                "s|select=s" => \@opt_select,
+                "o|sortby=s" => \$opt_sortby,
+                "total" => \$opt_total,
+                "add-vhost=s" => \$opt_add_vhost)) {
+  usage();
+}
+
+# Create select expressions.
+my @select_expr;
+
+foreach my $sel (@opt_select) {
+  if ($sel =~ /^(\w+)!=(\S+)$/) {
+    my $key = $1;
+    my $expr = $2;
+    push @select_expr, sub {
+      my $r = shift;
+      return ($r->{$key} ne $expr);
+    }
+  } elsif ($sel =~ /^(\w+)=~(\S+)$/) {
+    my $key = $1;
+    my $expr = $2;
+    push @select_expr, sub {
+      my $r = shift;
+      return ($r->{$key} =~ $expr);
+    }
+  } elsif ($sel =~ /^(\w+)!~(\S+)$/) {
+    my $key = $1;
+    my $expr = $2;
+    push @select_expr, sub {
+      my $r = shift;
+      return ($r->{$key} !~ $expr);
+    }
+  } elsif ($sel =~ /^(\w+)=(\S+)$/) {
+    my $key = $1;
+    my $expr = $2;
+    push @select_expr, sub {
+      my $r = shift;
+      return ($r->{$key} eq $expr);
+    }
+  } else {
+    printf "Skipping invalid expression: '%s'.\n", $sel;
+  }
+}
+
+if ($opt_help) {
+  help();
+}
+
+my $stat = {
+  parsed_lines => 0,
+  error_lines => 0,
+  selected_lines => 0,
+};
+my $vhost_stat;
+
+foreach my $logfile (@ARGV) {
+  open(my $fh, $logfile) or die "Unable to open $logfile\n";
+  read_file($fh);
+  close($fh);
+}
+
+foreach my $vhost (keys %{ $vhost_stat }) {
+  close_peak($vhost, "");
+}
+
+my $sortfunc;
+
+if ($opt_sortby =~ /^req/) {
+  $sortfunc = sub { $vhost_stat->{$a}->{requests} <=> $vhost_stat->{$b}->{requests} }
+} elsif ($opt_sortby =~ /^bytes/) {
+  $sortfunc = sub { $vhost_stat->{$a}->{bytes} <=> $vhost_stat->{$b}->{bytes} }
+} elsif ($opt_sortby =~ /^peak/) {
+  $sortfunc = sub { $vhost_stat->{$a}->{peak_requests} <=> $vhost_stat->{$b}->{peak_requests} }
+} else {
+  $sortfunc = sub { $a cmp $b };
+}
+
+my $total = {
+  vhost => "TOTAL",
+  requests => 0,
+  bytes => 0
+};
+
+foreach my $vhost (sort $sortfunc keys %{ $vhost_stat }) {
+  printf "%-42s %8d reqs %6d MB %6d reqs/min (%s)\n",
+  $vhost,
+  $vhost_stat->{$vhost}->{requests},
+  $vhost_stat->{$vhost}->{bytes} / (1024*1024),
+  $vhost_stat->{$vhost}->{peak_requests},
+  $vhost_stat->{$vhost}->{peak_requests_time};
+
+  $total->{requests} += $vhost_stat->{$vhost}->{requests};
+  $total->{bytes} += $vhost_stat->{$vhost}->{bytes};
+}
+
+if ($opt_total) {
+  printf "%-42s %8d reqs %6d MB\n",
+  $total->{vhost},
+  $total->{requests},
+  $total->{bytes} / (1024*1024);
+}
+
+exit 0;
+
+sub read_file
+{
+  my $lines = 0;
+  my $input = shift;
+
+  while (<$input>) {
+    my $line = $_;
+    chomp $line;
+
+    if ($opt_add_vhost) {
+      $line = $opt_add_vhost." ".$line;
+    }
+    
+    $lines++;
+    
+    if ($lines % 1000 == 0) {
+      print "$lines\r";
+    }
+
+    if ($line =~ /^(\S+)\s(\S+)\s(\S+)\s(\S+)\s\[([^\]]+)\]\s"([^"]+)"\s(\d+)\s(\d+)/) {
+      my $rec = {
+        vhost => $1,
+        remote_host => $2,
+        logname => $3,
+        remote_user => $4,
+        time => $5,
+        request => $6,
+        status => $7,
+        bytes => $8,
+      };
+
+      if ($rec->{request} =~ /(\w+)\s(\S+)\sHTTP/) {
+        $rec->{method} = $1;
+        $rec->{path_query} = $2;
+
+        if ($rec->{path_query} =~ /^(.*)\?(.*)$/) {
+          $rec->{path} = $1;
+          $rec->{query} = $2;
+        } else {
+          $rec->{path} = $rec->{path_query};
+          $rec->{query} = "";
+        }
+      } else {
+        # printf "Cannot parse request: '%s'\n", $rec->{request};
+        $stat->{error_lines}++;
+        next;
+      }
+
+      $stat->{parsed_lines}++;
+      
+      if (@select_expr) {
+        my $select = 1;
+        
+        foreach my $se (@select_expr) {
+          if (!$se->($rec)) {
+            $select = 0;
+            last;
+          }
+        }
+
+        if (!$select) {
+          next;
+        }
+      }
+
+      $stat->{selected_lines}++;
+      
+      my $vhost = $rec->{vhost};
+      
+      if (!defined $vhost_stat->{$vhost}) {
+        $vhost_stat->{$vhost} = {
+          requests => 0,
+          bytes => 0,
+          peak_requests => 0,
+          peak_requests_time => "",
+          peak_requests_tmp => 0,
+          peak_requests_tmp_time => "",
+        };
+      }
+      
+      $vhost_stat->{$vhost}->{requests}++;
+      $vhost_stat->{$vhost}->{bytes} += $rec->{bytes};
+
+      my $time = $rec->{time};
+      $time =~ s/\d\d\s/00 /;
+
+      if ($vhost_stat->{$vhost}->{peak_requests_tmp_time} ne $time) {
+        close_peak($vhost, $time);
+      }
+      $vhost_stat->{$vhost}->{peak_requests_tmp}++;
+    } else {
+      $stat->{error_lines}++;
+      # printf "Cannot parse line: ---\n%s\n---\n", $line;
+    }
+  }
+}
+
+sub close_peak
+{
+  my $vhost = shift;
+  my $new_time = shift;
+
+  if ($vhost_stat->{$vhost}->{peak_requests_tmp} > $vhost_stat->{$vhost}->{peak_requests}) {
+    $vhost_stat->{$vhost}->{peak_requests} = $vhost_stat->{$vhost}->{peak_requests_tmp};
+    $vhost_stat->{$vhost}->{peak_requests_time} = $vhost_stat->{$vhost}->{peak_requests_tmp_time};
+  }
+
+  $vhost_stat->{$vhost}->{peak_requests_tmp} = 0;
+  $vhost_stat->{$vhost}->{peak_requests_tmp_time} = $new_time;
+}
+
+sub usage
+{
+  print "Usage: $0 [--help] access.log access.log.1 ...\n";
+  exit 1;
+}
+
+sub help
+{
+  usage();
+}
