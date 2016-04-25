@@ -479,6 +479,12 @@ the virtual host field.
 
 =back
 
+=head1 REQUIREMENTS
+
+The tool requires the Regexp::Grammars package. Install it using the
+following command on Debian based systems: C<apt-get install
+libregexp-grammars-perl>.
+
 =head1 COPYRIGHT AND LICENSE
 
 Copyright (C) 2016 Oliver Hitz
