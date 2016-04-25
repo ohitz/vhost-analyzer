@@ -4,6 +4,7 @@
 #
 
 use Getopt::Long;
+use Pod::Usage;
 use IO::Handle;
 use strict;
 
@@ -11,58 +12,29 @@ STDERR->autoflush(1);
 STDOUT->autoflush(1);
 
 my $opt_help;
-my @opt_select;
-my $opt_sortby = "vhost";
+my $opt_debug;
+my $opt_select;
+my $opt_sort_by = "vhost";
 my $opt_total;
 my $opt_add_vhost;
 
 if (!GetOptions("h|help" => \$opt_help,
-                "s|select=s" => \@opt_select,
-                "o|sortby=s" => \$opt_sortby,
-                "total" => \$opt_total,
-                "add-vhost=s" => \$opt_add_vhost)) {
+                "d|debug" => \$opt_debug,
+                "s|select=s" => \$opt_select,
+                "o|sort-by=s" => \$opt_sort_by,
+                "t|total" => \$opt_total,
+                "a|add-vhost=s" => \$opt_add_vhost)) {
   usage();
-}
-
-# Create select expressions.
-my @select_expr;
-
-foreach my $sel (@opt_select) {
-  if ($sel =~ /^(\w+)!=(\S+)$/) {
-    my $key = $1;
-    my $expr = $2;
-    push @select_expr, sub {
-      my $r = shift;
-      return ($r->{$key} ne $expr);
-    }
-  } elsif ($sel =~ /^(\w+)=~(\S+)$/) {
-    my $key = $1;
-    my $expr = $2;
-    push @select_expr, sub {
-      my $r = shift;
-      return ($r->{$key} =~ $expr);
-    }
-  } elsif ($sel =~ /^(\w+)!~(\S+)$/) {
-    my $key = $1;
-    my $expr = $2;
-    push @select_expr, sub {
-      my $r = shift;
-      return ($r->{$key} !~ $expr);
-    }
-  } elsif ($sel =~ /^(\w+)=(\S+)$/) {
-    my $key = $1;
-    my $expr = $2;
-    push @select_expr, sub {
-      my $r = shift;
-      return ($r->{$key} eq $expr);
-    }
-  } else {
-    printf "Skipping invalid expression: '%s'.\n", $sel;
-  }
 }
 
 if ($opt_help) {
   help();
+}
+
+my $select_expr;
+
+if ($opt_select) {
+  $select_expr = create_select_expression($opt_select);
 }
 
 my $stat = {
@@ -84,11 +56,11 @@ foreach my $vhost (keys %{ $vhost_stat }) {
 
 my $sortfunc;
 
-if ($opt_sortby =~ /^req/) {
+if ($opt_sort_by =~ /^req/) {
   $sortfunc = sub { $vhost_stat->{$a}->{requests} <=> $vhost_stat->{$b}->{requests} }
-} elsif ($opt_sortby =~ /^bytes/) {
+} elsif ($opt_sort_by =~ /^traffic/) {
   $sortfunc = sub { $vhost_stat->{$a}->{bytes} <=> $vhost_stat->{$b}->{bytes} }
-} elsif ($opt_sortby =~ /^peak/) {
+} elsif ($opt_sort_by =~ /^peak/) {
   $sortfunc = sub { $vhost_stat->{$a}->{peak_requests} <=> $vhost_stat->{$b}->{peak_requests} }
 } else {
   $sortfunc = sub { $a cmp $b };
@@ -123,7 +95,7 @@ exit 0;
 
 sub read_file
 {
-  my $lines = 0;
+  my $linenum = 0;
   my $input = shift;
 
   while (<$input>) {
@@ -134,10 +106,10 @@ sub read_file
       $line = $opt_add_vhost." ".$line;
     }
     
-    $lines++;
+    $linenum++;
     
-    if ($lines % 1000 == 0) {
-      print "$lines\r";
+    if ($linenum % 1000 == 0) {
+      print "$linenum\r";
     }
 
     if ($line =~ /^(\S+)\s(\S+)\s(\S+)\s(\S+)\s\[([^\]]+)\]\s"([^"]+)"\s(\d+)\s(\d+)/) {
@@ -171,19 +143,16 @@ sub read_file
 
       $stat->{parsed_lines}++;
       
-      if (@select_expr) {
-        my $select = 1;
-        
-        foreach my $se (@select_expr) {
-          if (!$se->($rec)) {
-            $select = 0;
-            last;
-          }
-        }
-
-        if (!$select) {
+      if ($select_expr) {
+        if (!$select_expr->($rec)) {
           next;
         }
+
+        if ($opt_debug) {
+          printf("DEBUG: matched line %d: %s\n",
+                 $linenum,
+                 $line);
+        }        
       }
 
       $stat->{selected_lines}++;
@@ -232,13 +201,266 @@ sub close_peak
   $vhost_stat->{$vhost}->{peak_requests_tmp_time} = $new_time;
 }
 
+sub error
+{
+  my $message = shift;
+  printf "ERROR: %s\n", $message;
+  exit 1;
+}
+
 sub usage
 {
-  print "Usage: $0 [--help] access.log access.log.1 ...\n";
-  exit 1;
+  pod2usage(1);
 }
 
 sub help
 {
-  usage();
+  pod2usage(0);
 }
+
+#
+# Expression parser.
+#
+sub create_select_expression
+{
+  my $expr = shift;
+  
+  my $grammar = do {
+    use Regexp::Grammars;
+    qr{
+      ^<Expr>$
+
+      <rule: Expr>
+          <[Term]>+ % or
+
+      <rule: Term>
+          <[Factor]>+ % and
+
+      <rule: Factor>
+          <Match>
+        | not <Factor>
+        | \( <Expr> \)
+
+      <rule: Match>
+          <Key> <MatchOp> <Value>
+
+      <token: Key>
+          vhost | remote_host | logname | remote_user | time | request | status | bytes | method | path_query | path | query
+
+      <token: MatchOp>
+          = | != | =~ | !~
+
+      <token: Value>
+          "<MATCH=([^"]*)>"
+        | '<MATCH=([^']*)>'
+    }xms;
+  };
+
+  # Compile select expression.
+  if ($opt_select =~ $grammar) {
+    return compile_expr($/{Expr});
+  } else {
+    error("Cannot parse expression.")
+  }  
+}
+
+sub compile_expr
+{
+  my $expr = shift;
+  my @terms;
+  
+  foreach my $t (@{ $expr->{Term} }) {
+    push @terms, compile_term($t);
+  }
+
+  return sub {
+    my $r = shift;
+    foreach my $t (@terms) {
+      if ($t->($r)) {
+        return 1;
+      }
+    }
+    return 0;
+  }
+}
+
+sub compile_term
+{
+  my $term = shift;
+  my @factors;
+
+  # print "term: $term\n";
+  
+  foreach my $f (@{ $term->{Factor} }) {
+    push @factors, compile_factor($f);
+  }
+
+  return sub {
+    my $r = shift;
+    foreach my $f (@factors) {
+      if (!$f->($r)) {
+        return 0;
+      }
+    }
+    return 1;
+  }
+}
+
+sub compile_factor
+{
+  my $factor = shift;
+
+  if ($factor->{Match}) {
+    return compile_match($factor->{Match});
+  } elsif ($factor->{Factor}) {
+    my $f = compile_factor($factor->{Factor});
+    return sub {
+      my $r = shift;
+      return !$f->($r);
+    }
+  } elsif ($factor->{Expr}) {
+    return compile_expr($factor->{Expr});
+  }
+}
+
+sub compile_match
+{
+  my $match = shift;
+
+  if ($match->{MatchOp} eq '=') {
+    return sub {
+      my $r = shift;
+      return ($r->{$match->{Key}} eq $match->{Value});
+    };
+  } elsif ($match->{MatchOp} eq '!=') {
+    return sub {
+      my $r = shift;
+      return ($r->{$match->{Key}} ne $match->{Value});
+    };
+  } elsif ($match->{MatchOp} eq '=~') {
+    return sub {
+      my $r = shift;
+      return ($r->{$match->{Key}} =~ $match->{Value});
+    };
+  } elsif ($match->{MatchOp} eq '!~') {
+    return sub {
+      my $r = shift;
+      return ($r->{$match->{Key}} !~ $match->{Value});
+      };
+  }
+}
+
+__END__
+
+=head1 NAME
+
+vhost-analyzer
+
+=head1 SYNOPSIS
+
+vhost-analyzer [OPTIONS] access.log
+
+=head1 DESCRIPTION
+
+B<vhost-analyzer> is a useful tool to analyze your access.log
+containing the logs of many different virtual hosts.
+
+By default, B<vhost-analyzer> parses the first eight fields of each
+log entry. The first fields is the virtual host name, and the other
+fields are equal to the Common Log Format fields. For the Apache
+webserver, this means that the log format needs to start as follows:
+
+    LogFormat "%V %h %l %u %t \"%r\" %s %b" vcombined
+
+Since extra fields are not parsed, any number and combination of other
+fields can be added.
+
+B<vhost-analyzer> can also be used to parse logs which start with the
+Common Log Format fields but which don't contain the virtual host
+name. Using the C<--add-host> option, all records can be considered
+for one specific virtual host.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-h|--help>
+
+Show the help message.
+
+=item B<-s|--select EXPRESSION>
+
+This options allows to specify which lines should be used in the
+analysis. Lines not matching the given expression are not included in
+the analysis.
+
+Expressions are an and/or combination of simple string matching
+expressions of the form C<KEY OP STRING>, whereas C<KEY> can be one of
+the following keys: C<vhost>, C<remote_host>, C<logname>,
+C<remote_user>, C<time>, C<request>, C<status>, C<method>, C<path>,
+C<query>. C<OP> is a comparison operation: C<=> (equal), C<!=> (not
+equal), C<=~> (perl regex match), C<!~> (inverse perl regex match).
+
+Examples:
+
+=over
+
+=item C<vhost="mydomain.com">
+
+Analyzes only records for the virtual host C<mydomain.com>.
+
+=item C<vhost="mydomain.com" and path=~"\.(css|js|png|gif|jpg)$">
+
+Analyzes accesses to static files on for C<mydomain.com>.
+
+=back
+
+=item B<-o|--sort-by FIELD>
+
+Sort the resulting table by the specified field. Available fields for
+sorting:
+
+=over
+
+=item vhost (default): Sort by virtual host name
+
+=item requests: Sort by number of requests
+
+=item traffic: Sort by traffic
+
+=item peak: Sort by peak requests (highest number of requests in one minute)
+
+=back
+
+=item B<-t|--total>
+
+Add a Total row to the output table.
+
+=item B<-a|--add-vhost VHOST>
+
+Consider all lines to be from the specified VHOST. Use this if you
+want to work on the log of a single virtual host which doesn't have
+the virtual host field.
+
+=back
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright (C) 2016 Oliver Hitz
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or (at
+your option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307,
+USA.
+
+=cut
