@@ -6,6 +6,7 @@
 use Getopt::Long;
 use Pod::Usage;
 use IO::Handle;
+use Time::HiRes qw ( time );
 use strict;
 
 STDERR->autoflush(1);
@@ -17,13 +18,15 @@ my $opt_select;
 my $opt_sort_by = "vhost";
 my $opt_total;
 my $opt_add_vhost;
+my $opt_stats;
 
 if (!GetOptions("h|help" => \$opt_help,
                 "d|debug" => \$opt_debug,
                 "s|select=s" => \$opt_select,
                 "o|sort-by=s" => \$opt_sort_by,
                 "t|total" => \$opt_total,
-                "a|add-vhost=s" => \$opt_add_vhost)) {
+                "a|add-vhost=s" => \$opt_add_vhost,
+                "S|stats|statistics" => \$opt_stats)) {
   usage();
 }
 
@@ -38,6 +41,7 @@ if ($opt_select) {
 }
 
 my $stat = {
+  parse_start => time(),
   parsed_lines => 0,
   error_lines => 0,
   selected_lines => 0,
@@ -53,6 +57,8 @@ foreach my $logfile (@ARGV) {
 foreach my $vhost (keys %{ $vhost_stat }) {
   close_peak($vhost, "");
 }
+
+$stat->{parse_end} = time();
 
 my $sortfunc;
 
@@ -72,8 +78,15 @@ my $total = {
   bytes => 0
 };
 
+printf "%-32s %8s %8s %8s %s\n",
+    "VirtualHost",
+    "Req",
+    "DataMB",
+    "PeakReq",
+    "PeakTime";
+
 foreach my $vhost (sort $sortfunc keys %{ $vhost_stat }) {
-  printf "%-42s %8d reqs %6d MB %6d reqs/min (%s)\n",
+  printf "%-32s %8d %8d %8d %s\n",
   $vhost,
   $vhost_stat->{$vhost}->{requests},
   $vhost_stat->{$vhost}->{bytes} / (1024*1024),
@@ -85,10 +98,25 @@ foreach my $vhost (sort $sortfunc keys %{ $vhost_stat }) {
 }
 
 if ($opt_total) {
-  printf "%-42s %8d reqs %6d MB\n",
+  printf "%-32s %8d %8d\n",
   $total->{vhost},
   $total->{requests},
   $total->{bytes} / (1024*1024);
+}
+
+if ($opt_stats) {
+  printf("
+Statistics:
+Parsed %d lines in %.1f s (%d lines/s)
+Analyzed %d lines, skipped %d
+Unable to parse %d lines
+",
+         $stat->{parsed_lines},
+         $stat->{parse_end} - $stat->{parse_start},
+         $stat->{parsed_lines} / ($stat->{parse_end} - $stat->{parse_start}),
+         $stat->{selected_lines},
+         $stat->{parsed_lines} - $stat->{selected_lines},
+         $stat->{error_lines});
 }
 
 exit 0;
@@ -363,7 +391,10 @@ vhost-analyzer [OPTIONS] access.log
 =head1 DESCRIPTION
 
 B<vhost-analyzer> is a useful tool to analyze your access.log
-containing the logs of many different virtual hosts.
+containing the logs of many different virtual hosts. It shows for each
+virtual host found in the access.log file the number of requests, the
+total data transferred (from the webserver to the clients), as well as
+the peak number of requests answered in one minute.
 
 By default, B<vhost-analyzer> parses the first eight fields of each
 log entry. The first fields is the virtual host name, and the other
@@ -435,6 +466,10 @@ sorting:
 =item B<-t|--total>
 
 Add a Total row to the output table.
+
+=item B<-S|--statistics>
+
+Show some useful statistics.
 
 =item B<-a|--add-vhost VHOST>
 

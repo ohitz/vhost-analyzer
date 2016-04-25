@@ -9,7 +9,10 @@ vhost-analyzer [OPTIONS] access.log
 =head1 DESCRIPTION
 
 B<vhost-analyzer> is a useful tool to analyze your access.log
-containing the logs of many different virtual hosts.
+containing the logs of many different virtual hosts. It shows for each
+virtual host found in the access.log file the number of requests, the
+total data transferred (from the webserver to the clients), as well as
+the peak number of requests answered in one minute.
 
 By default, B<vhost-analyzer> parses the first eight fields of each
 log entry. The first fields is the virtual host name, and the other
@@ -81,6 +84,10 @@ sorting:
 =item B<-t|--total>
 
 Add a Total row to the output table.
+
+=item B<-S|--statistics>
+
+Show some useful statistics.
 
 =item B<-a|--add-vhost VHOST>
 
