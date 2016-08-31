@@ -19,6 +19,7 @@ my $opt_sort_by = "vhost";
 my $opt_total;
 my $opt_add_vhost;
 my $opt_stats;
+my $opt_truncate_vhosts;
 
 if (!GetOptions("h|help" => \$opt_help,
                 "d|debug" => \$opt_debug,
@@ -26,7 +27,8 @@ if (!GetOptions("h|help" => \$opt_help,
                 "o|sort-by=s" => \$opt_sort_by,
                 "t|total" => \$opt_total,
                 "a|add-vhost=s" => \$opt_add_vhost,
-                "S|stats|statistics" => \$opt_stats)) {
+                "S|stats|statistics" => \$opt_stats,
+                "T|truncate-vhosts=i" => \$opt_truncate_vhosts)) {
   usage();
 }
 
@@ -126,6 +128,22 @@ sub read_file
   my $linenum = 0;
   my $input = shift;
 
+  my $truncate_vhosts_re;
+  
+  if ($opt_truncate_vhosts) {
+    # Construct regexp to truncate virtualhosts.
+    my $tmp = "(";
+    for (my $i = 0; $i < $opt_truncate_vhosts; $i++) {
+      if ($i != 0) {
+        $tmp .= "\\.";
+      }
+      $tmp .= "[^\\.]+";
+    }
+    $tmp .= ")\$";
+
+    $truncate_vhosts_re = qr/$tmp/;
+  }
+  
   while (<$input>) {
     my $line = $_;
     chomp $line;
@@ -151,6 +169,14 @@ sub read_file
         status => $7,
         bytes => $8,
       };
+
+      if ($opt_truncate_vhosts) {
+        if ($rec->{vhost} !~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+          if ($rec->{vhost} =~ $truncate_vhosts_re) {
+            $rec->{vhost} = $1;
+          }
+        }
+      }
 
       if ($rec->{request} =~ /(\w+)\s(\S+)\sHTTP/) {
         $rec->{method} = $1;
@@ -466,6 +492,12 @@ sorting:
 =item B<-t|--total>
 
 Add a Total row to the output table.
+
+=item B<-T|--truncate-vhosts NUMBER>
+
+Truncate virtualhost names to contain only up to NUMBER dots
+(including implicit trailing dot). For example, 2 means that
+C<*.domain.com> gets truncated to C<domain.com>.
 
 =item B<-S|--statistics>
 
