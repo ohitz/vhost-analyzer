@@ -85,6 +85,12 @@ sorting:
 
 Add a Total row to the output table.
 
+=item B<-T|--truncate-vhosts NUMBER>
+
+Truncate virtualhost names to contain only up to NUMBER dots
+(including implicit trailing dot). For example, 2 means that
+C<*.domain.com> gets truncated to C<domain.com>.
+
 =item B<-S|--statistics>
 
 Show some useful statistics.
